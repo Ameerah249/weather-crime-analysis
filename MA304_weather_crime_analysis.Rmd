@@ -1,0 +1,591 @@
+---
+title: 'MA304: How Does Weather Relate to Crime Type and Frequency in Colchester,
+  2024?'
+author: 'RegNo: 2401838'
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '2'
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: flatly
+---
+
+## 1. Introduction
+
+This study explores the relationship between the weather and street-level crime in Colchester over the course of 2024. The primary research question guiding the analysis is: **To what extent do temperature, rainfall, and humidity predict variation in the frequency and type of crime?**
+
+To address this, the study draws on crime and weather datasets, which are aggregated and examined across multiple dimensions. The analysis begins with univariate and bivariate summaries to understand the baseline distributions and simple associations, followed by temporal trend analysis and spatial mapping to uncover seasonality and geographic distribution. A series of linear regression models are then used to evaluate the statistical strength of weather-related predictors.
+
+## 2. Data Preparation
+
+This section loads and prepares the crime and weather datasets for analysis. We convert date formats, remove rows with missing coordinates, and ensure variables are structured correctly for time series and spatial mapping.
+
+Two datasets are used: - `crime24.csv`, which contain monthly street-level crime data for 2024 in Colchester, and - `temp24.csv`, containing daily weather metrics from a local station near Colchester.
+
+Basic cleaning and column transformation is applied to enable merging and accurate visual analysis.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,        
+  results = "show",     
+  message = FALSE,
+  warning = FALSE
+)
+
+library(broom)
+library(knitr)
+library(tidyverse)
+library(lubridate)
+library(leaflet)
+library(leaflet.extras)
+library(DT)
+library(plotly)
+library(dplyr)
+library(geosphere)
+library(ggpubr)
+library(corrplot)
+```
+
+### 2.1 Load Datasets
+
+```{r load-data, echo=TRUE, message=FALSE, warning=FALSE}
+
+# Load the datasets
+crime <- read_csv("crime24.csv")
+weather <- read_csv("temp24.csv")
+
+# Clean and prepare crime data
+crime <- crime %>%
+  filter(!is.na(lat), !is.na(long)) %>%
+  mutate(
+    date = ym(date),                     # ensure proper date parsing
+    month = floor_date(date, "month")     # extract month for joining
+  )
+
+# Clean and prepare weather data
+weather <- weather %>%
+  mutate(
+    Date = ymd(Date),                     # ensure Date is parsed correctly
+    month = floor_date(Date, "month")     # extract month for joining
+  )
+
+# Aggregate monthly crime counts
+crime_monthly <- crime %>%
+  group_by(month) %>%
+  summarise(monthly_count = n(), .groups = "drop")
+
+# Aggregate monthly weather data
+weather_monthly <- weather %>%
+  group_by(month) %>%
+  summarise(
+    TemperatureCAvg = mean(TemperatureCAvg, na.rm = TRUE),
+    HrAvg = mean(HrAvg, na.rm = TRUE),
+    Precmm = sum(Precmm, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Merge datasets on by month
+crime_weather_monthly <- left_join(crime_monthly, weather_monthly, by = "month")
+```
+
+## 3. Univariate Analysis
+
+To establish a baseline understanding of the data, this section explores the distribution of individual variables within the crime and weather datasets. Summary statistics and visualisations are used to describe the frequency and variation of recorded crime incidents, as well as key weather metrics such as temperature, rainfall, and humidity. By examining these variables in isolation, we can identify dominant crime categories, seasonal patterns, and any potential skewness or irregularities that may influence the following analyses.
+
+### 
+
+3.1 Crime Frequency Table
+
+The first step in the analysis is to examine the overall frequency of different crime types recorded in Colchester during 2024. The table below displays the number of incidents per category, ranked in descending order. This provides an initial sense of which offences are most common and may warrant further investigation.
+
+```{r crime-freq-table, echo=TRUE}
+
+# Calculate crime frequency
+crime_freq <- crime %>%
+  count(category, sort = TRUE)
+
+# Creating a frequeny table
+DT::datatable(crime_freq,
+              options = list(pageLength = 5),
+              colnames = c("Crime Type", "Frequency"),
+              caption = "Table 1: Frequency of Each Crime Type in 2024")
+```
+
+The table reveals that **anti-social behaviour** and **violent crime** are by far the most frequently reported crimes, together accounting for a substantial portion of total incidents. Other notable contributors include **shoplifting**, **vehicle crime**, and **public order offences**. This distribution highlights the diversity of criminal activity in the area and suggests that any meaningful analysis of environmental influence should consider the differences across crime types.
+
+### 3.2 Top 10 Crime Types in Colchester 2024
+
+Next, we visualise the overall distribution of reported crime types in Colchester during 2024. The bar chart below displays the ten most frequent crime categories, providing a clear overview of which types dominate the dataset.
+
+```{r top10-barplot, echo=TRUE}
+# Selecting top 10 crimes
+top10 <- crime_freq %>% slice_max(n, n = 10)
+
+# Plotting crime type against frequency
+ggplot(top10, aes(x = reorder(category, n), y = n)) +
+  geom_col(fill = "burlywood") +
+  coord_flip() +
+  labs(title = "Top 10 Most Frequent Crimes",
+       x = "Crime Type", y = "Number of Incidents")
+```
+
+*Figure 1: Bar plot of the ten most commonly reported crime categories in Colchester, 2024.*
+
+The chart shows that **violent crime** is by far the most commonly reported offence, with more than double the incidents of the next most frequent type. **Anti-social behaviour** and **shoplifting** also contribute significantly to the overall crime landscape.
+
+Together, these top three categories account for the majority of incidents, suggesting that interventions targeting these areas could yield the greatest impact. In contrast, crimes like **bicycle theft** and **burglary** are less common, though still important to monitor.
+
+### 3.3 Monthly Crime Trend
+
+To examine how crime levels vary over time, this section plots the total number of reported incidents by month throughout 2024. Analysing temporal patterns is essential for identifying potential seasonality or recurring trends that may relate to changes in routine activity, public events, or environmental conditions.
+
+```{r histogram-density, echo=TRUE}
+
+# Calculating monthly crime rate
+monthly_crime <- crime %>% count(date)
+
+# Plotting monthly crime count
+ggplot(monthly_crime, aes(x = date)) +
+  geom_line(aes(y = n, color = "Monthly Crime Count"), size = 1.2) +
+  geom_smooth(aes(y = n, color = "Smoothed Trend"), method = "loess", se = FALSE) +
+  labs(
+    title = "Monthly Crime Trend in 2024",
+    x = "Month",
+    y = "Number of Crimes",
+    color = ""
+  ) +
+  scale_color_manual(values = c("Monthly Crime Count" = "lightsalmon3", "Smoothed Trend" = "sienna")) +
+  theme_minimal()
+```
+
+*Figure 2: Time series of total monthly crime counts in 2024, with loess smoothing to illustrate seasonal variation.*
+
+Crime rates drop during the early spring (March) and again in late autumn (November), which may reflect colder weather or fewer outdoor opportunities for certain types of offences. In contrast, the crime rates peak significantly in April and July, indicating that warmer weather and increased outdoor activity could have an affect on crime. The loess smoother reinforces this pattern and sets up further analysis on the role of weather variables in shaping these monthly fluctuations.
+
+### 3.4 Monthly Crime Counts by Category
+
+Next, we investigate how crime volume varies across categories on a monthly basis. The violin plot below illustrates the spread of monthly incidents for each crime type, revealing differences in frequency and variability.
+
+```{r boxplot-category, echo=TRUE}
+
+# Preparing monthly crime count by category
+crime_monthly_cat <- crime %>%
+  mutate(month = floor_date(as.Date(date), unit = "month")) %>%
+  group_by(month, category) %>%
+  summarise(monthly_count = n(), .groups = "drop")
+
+# Plotting monthly counts by category
+ggplot(crime_monthly_cat, aes(x = category, y = monthly_count)) +
+  geom_violin(fill = "darkseagreen4", alpha = 0.7) +
+  coord_flip() +
+  labs(
+    title = "Monthly Crime Distribution by Category",
+    x = "Crime Category",
+    y = "Monthly Crime Count"
+  )
+```
+
+*Figure 3: Violin plot showing the distribution of monthly crime counts for each category, highlighting variability and frequency across the year.*
+
+**Violent crime** shows the highest monthly totals, with a broad distribution and occasional extreme values. **Anti-social behaviour** and **shoplifting** also exhibit relatively consistent and frequent occurrence across the year. In contrast, categories such as **bicycle theft**, **robbery**, and **possession of weapons** show low and narrowly distributed counts, suggesting these are less prevalent and more sporadic in nature.
+
+### 3.5 Summary of Univariate Analysis
+
+The univariate analysis reveals that crime in Colchester is concentrated in a few dominant categories, with violent crime and anti-social behaviour accounting for the majority of incidents. Monthly crime trends show a clear seasonal pattern, peaking during the summer months. Variation across categories is also notable, as some crimes display wide fluctuations month to month, while others remain relatively stable. These findings provide important context for the next stage, where we examine how weather factors may help explain these initial patterns.
+
+While this analysis considered all recorded crime types, the remainder of this report focuses on the five most frequent categories: **violent crime**, **anti-social behaviour**, **shoplifting**, **vehicle crime**, and **public order offences**. These represent the bulk of recorded incidents and offer the clearest opportunity to investigate weather-related patterns whilst minimising noise.
+
+## 4. Bivariate Analysis: Weather and Crime
+
+This section explores the relationships between pairs of variables, with a particular focus on how weather conditions correlate with patterns in crime. By comparing crime counts with **temperature**, **rainfall**, and **humidity**, the analysis aims to assess whether these environmental factors are associated with measurable changes in criminal activity. Overall trends and crime-specific patterns are examined, using scatter plots, correlation coefficients, and linear smoothing techniques to quantify and visualise the strength and direction of these associations.
+
+### 4.1 Correlation Overview
+
+To begin the analysis, we examine the overall relationships between monthly crime counts and key weather variables using a correlation matrix. This provides a high-level view of how strongly each weather feature is associated with changes in crime. By visualising correlations between variables, we can identify which variables may warrant further investigation.
+
+Strong correlations are indicated by larger circles and more saturated colors: red for positive associations and green for negative ones. Values near zero are highlighted in yellow and suggest little to no linear relationship.
+
+```{r}
+# Selecting relevant variables and filtering out incomplete rows
+cor_vars <- crime_weather_monthly %>%
+  select(monthly_count, TemperatureCAvg, HrAvg, Precmm) %>%
+  filter(complete.cases(.))
+
+# Computing correlation matrix
+cor_matrix <- cor(cor_vars)
+
+# Plotting correlation matrix
+corrplot(cor_matrix,
+         method = "circle",
+         type = "upper",
+         addCoef.col = "black",
+         number.cex = 0.7,
+         tl.col = "black",
+         tl.srt = 45,
+         col = colorRampPalette(c("forestgreen", "darkgoldenrod2", "brown"))(200),
+         title = "Correlation Between Crime and Weather Variables",
+         mar = c(0, 0, 2, 0))
+
+
+```
+
+*Figure 4: Correlation matrix showing relationships between crime and weather variables. Stronger associations are shown by darker colors and larger labels.*
+
+The results indicate a moderate positive correlation between crime and average temperature (r = 0.42), suggesting that higher temperatures may be associated with greater criminal activity. This aligns with the link between warmer weather and increased outdoor interaction, which can increase both opportunity and conflict-driven offenses. Interestingly, total monthly rainfall also shows a notable positive correlation with crime (r = 0.58), contradicting the common assumption that adverse weather suppresses crime. This may reflect the prevalence of indoor or opportunistic crimes during wet months.
+
+Humidity, conversely, shows no meaningful relationship with crime (r = -0.08), implying limited relevance in this context. The matrix also highlights internal weather dynamics, with a strong negative correlation between temperature and humidity (r = -0.74) and a moderate positive correlation between humidity and rainfall (r = 0.39).
+
+These findings provide a basis for selecting predictors in subsequent modeling. The next section builds on this by fitting a multiple linear regression model to evaluate the joint influence of temperature, precipitation, and humidity on monthly crime levels.
+
+### 4.2 Temperature vs Monthly Crime
+
+To explore if warmer weather is indeed associated with higher rates of crime, the monthly average temperature is compared with total crime counts per month. A linear regression line is included, along with Pearson’s correlation coefficient.
+
+```{r temp-all, echo=TRUE}
+
+# Working out correlation 
+cor_temp <- cor(crime_weather_monthly$TemperatureCAvg, crime_weather_monthly$monthly_count, use = "complete.obs")
+
+# Plotting crime against temperature
+ggplot(crime_weather_monthly, aes(x = TemperatureCAvg, y = monthly_count)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "sienna3") +
+  labs(
+    title = "Monthly Crime vs Average Temperature",
+    subtitle = paste("Pearson’s r =", round(cor_temp, 2)),
+    x = "Average Temperature (°C)",
+    y = "Monthly Crime Count"
+  ) +
+  theme_minimal()
+```
+
+*Figure 5: Scatterplot of average monthly temperature vs total crime counts, with linear trend and correlation coefficient.*
+
+This scatter plot presents the relationship between average monthly temperature and total **monthly crime counts**. The linear regression line (with a 95% confidence interval shaded in grey) shows a moderate positive association.
+
+This indicates that, over the course of 2024, **crime levels tended to increase in warmer months**. While the relationship isn’t extremely strong, the upward trend suggests a potential seasonal pattern where elevated temperatures may be linked to more social activity or outdoor exposure, which could contribute to a rise in incidents. The confidence interval also widens at higher temperatures, suggesting greater variability in crime counts during summer months.
+
+### 4.3 Rainfall vs Monthly Crime
+
+Next, we examine how precipitation may relate to overall crime frequency. The plot below compares monthly rainfall totals (in mm) with corresponding crime counts. A linear fit and correlation value provide insight into the strength of the relationship.
+
+```{r rain-all, echo=TRUE}
+# Working out orrelation
+cor_rain <- cor(crime_weather_monthly$Precmm, crime_weather_monthly$monthly_count, use = "complete.obs")
+
+# Plotting crime against rainfall
+ggplot(crime_weather_monthly, aes(x = Precmm, y = monthly_count)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "aquamarine4") +
+  labs(
+    title = "Monthly Crime vs Rainfall",
+    subtitle = paste("Pearson’s r =", round(cor_rain, 2)),
+    x = "Monthly Rainfall (mm)",
+    y = "Monthly Crime Count"
+  ) +
+  theme_minimal()
+```
+
+*Figure 6: Scatterplot of total monthly rainfall vs crime counts, with linear fit and Pearson's r.*
+
+This plot explores the relationship between **total monthly rainfall** and **crime volume** across 2024. The regression line appears relatively flat, and the computed **Pearson correlation of r = 0.58** suggests a **moderate positive relationship**.
+
+As explained previously, we may expect **rainy conditions to deter outdoor crimes**. However, the observed correlation may be driven by confounding seasonal factors: for instance, summer months in Colchester may feature occasional storms yet still have higher activity levels, increasing the chance for crime.
+
+### 4.4 Temperature vs Monthly Crime Count for Top Categories
+
+To focus on broader seasonal trends and filter out noise, we aggregate crime data by month and examine how monthly average temperature relates to crime frequency across the five most common crime types in Colchester.
+
+The plots below show one point per month (n = 12 per category), with a linear regression line and Pearson’s r and p-values included to assess the strength and significance of each relationship.
+
+```{r temp-category-corr, echo=TRUE}
+# Top 5 categories by frequency
+top_types <- crime %>%
+  count(category, sort = TRUE) %>%
+  slice_max(n, n = 5) %>%
+  pull(category)
+
+# Aggregate by month and category
+crime_weather_by_cat <- crime %>%
+  filter(category %in% top_types) %>%
+  mutate(month = floor_date(date, "month")) %>%
+  count(month, category, name = "monthly_count") %>%
+  left_join(weather_monthly, by = "month")
+
+# Plot temperature vs crime count for top 5
+ggplot(crime_weather_by_cat, aes(x = TemperatureCAvg, y = monthly_count)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "sienna3") +
+  stat_cor(method = "pearson", size = 3, label.x = 5) +
+  facet_wrap(~ category, scales = "free_y") +
+  labs(
+    title = "Temperature vs Monthly Crime Count for Top Categories",
+    x = "Average Monthly Temperature (°C)",
+    y = "Monthly Crime Count"
+  ) +
+  theme_minimal()
+```
+
+*Figure 7: Faceted scatterplots showing the relationship between temperature and monthly crime counts for five key categories.*
+
+Figure 7 shows how monthly crime counts for the five most frequent crime types vary with average monthly temperature. The only statistically significant positive relationship is observed for **public-order offences** (R = 0.62, p = 0.033), further suggesting that warmer months are associated with increased disorder-related incidents.
+
+For **anti-social behaviour** and **criminal damage/arson**, positive correlations are also observed, although these are not statistically significant (R = 0.30 and R = 0.44, respectively). Conversely, **shoplifting** shows a weak negative correlation (R = -0.30), possibly indicating reduced indoor retail theft in warmer weather, though again this result is not significant. **Violent crime** shows very little association with temperature (R = 0.19, p = 0.56).
+
+These findings suggest that weather–crime relationships are not uniform across crime types. Where associations do appear, they are likely influenced by crime context—e.g., crimes occurring in public or outdoor spaces may be more temperature-sensitive.
+
+### 4.5 Rainfall vs Monthly Crime Count for Top Categories
+
+Here, we examine how monthly average rainfall relates to crime frequency across the five most common crime types in Colchester. Similarly to Figure 7, plots below show one point per month, with a linear regression line and Pearson’s r and p-values.
+
+```{r}
+
+# Plot rainfall vs crime count for top 5
+ggplot(crime_weather_by_cat, aes(x = Precmm, y = monthly_count)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = FALSE, color = "aquamarine4") +
+  stat_cor(method = "pearson", size = 3) +
+  facet_wrap(~ category, scales = "free_y") +
+  labs(
+    title = "Rainfall vs Monthly Crime Count for Top Categories",
+    x = "Total Monthly Rainfall (mm)",
+    y = "Monthly Crime Count"
+  ) +
+  theme_minimal()
+
+```
+
+*Figure 8: Faceted scatterplots showing the relationship between rainfall and monthly crime counts for five key categories.*
+
+The faceted scatterplot shows the relationship between **total monthly rainfall** and **monthly crime counts** across the five most common crime categories.
+
+A **moderate positive relationship** is observed for **criminal damage and arson** (R = 0.57, p = 0.052) and **violent crime** (R = 0.53, p = 0.078), suggesting that these categories tend to see slightly elevated incident counts during wetter months, although statistical significance remains marginal.
+
+For **anti-social behaviour**, the association is weaker (R = 0.34, p = 0.28), while **shoplifting** shows a weaker and statistically insignificant correlation (R = 0.19, p = 0.55). Interestingly, **public order offences** are the only category with a negative correlation (R = -0.22, p = 0.49), hinting that rain may slightly suppress public gatherings or demonstrations where such offences typically occur.
+
+Taken together, these plots reveal that **rainfall effects on crime are not uniform**: while some categories show mild positive associations, others appear unaffected or inversely related.
+
+### 4.6. Summary of Bivariate Insights
+
+This analysis reveals that the relationship between weather and crime is both **modest and category-specific**. Among the top crime types, **vehicle crime** shows the strongest and most statistically significant correlation with **temperature**, suggesting that warmer conditions may be linked to greater vehicle-related activity or vulnerability. **Public order offences** also exhibit a moderate positive correlation with temperature, supporting the notion that outdoor gatherings and disturbances become more frequent in warmer months.
+
+Conversely, **violent crime**, **shoplifting**, and **anti-social behaviour** show weaker, non-significant associations with temperature, indicating a more stable pattern unaffected by seasonal warmth.
+
+**Criminal damage and arson** and **violent crime** show moderate positive associations with total monthly rainfall, hinting that wetter conditions may indirectly influence stress, indoor conflict, or opportunistic crimes. However, **public order offences** display a mild negative relationship, suggesting a possible dampening effect of rain on public events.
+
+Overall, these results indicate that **environmental effects on crime vary across offence types**, with temperature and precipitation influencing certain behaviours more than others. This reinforces the need for disaggregated models when exploring weather–crime dynamics.
+
+## 5. Spatial Crime Analysis
+
+This section maps the geographic distribution of major crime categories across Colchester using street-level incident data. By visualising hotspots for offences like **violent crime** and **anti-social behaviour**, we aim to identify spatial patterns and areas of persistent criminal activity.
+
+### 5.1 Crime Density Mapping
+
+To explore spatial crime concentration, we plot a kernel density heatmap using all recorded crime locations in Colchester. This highlights general hotspots without distinguishing by crime type.
+
+```{r echo=TRUE}
+
+# Creating a density heatmap
+leaflet(crime) %>%
+  addTiles() %>%
+  addHeatmap(lng = ~long, lat = ~lat, blur = 20, max = 0.05, radius = 15)
+```
+
+*Figure 9: Leaflet heatmap showing overall spatial crime intensity across Colchester in 2024.*
+
+The density map reveals that crime is heavily concentrated around the **town centre** and **transport corridors**. These locations likely experience more foot traffic and opportunity-driven incidents. The residential zones show less activity overall.
+
+### 5.2 Interactive Crime Map by Category
+
+To better understand spatial variation by crime type, we create an interactive leaflet map with a toggle allowing users to filter by category. Each dot represents a crime location, color-coded by type, and can be filtered dynamically.
+
+```{r echo=TRUE}
+
+# Working out top crime types by category for the leaflet layers
+crime_layers <- top_types %>%
+  map(function(cat) crime %>% filter(category == cat))
+
+# Creating the colour palate and assigning them to categories
+layer_colors <- c("brown", "orange", "yellow", "darkolivegreen", "cadetblue")
+names(layer_colors) <- top_types
+
+# Creating the leaflet map
+map <- leaflet() %>% addProviderTiles("CartoDB.Positron")
+for (i in seq_along(top_types)) {
+  map <- map %>%
+    addCircleMarkers(
+      data = crime_layers[[i]],
+      lng = ~long, lat = ~lat,
+      popup = ~paste("Crime:", category, "<br>Street:", street_name),
+      color = layer_colors[[i]],
+      radius = 4, fillOpacity = 0.6, stroke = FALSE,
+      group = top_types[[i]]
+    )
+}
+map <- map %>%
+  addLayersControl(
+    overlayGroups = top_types,
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  addLegend("bottomright", colors = layer_colors, labels = top_types, title = "Crime Types")
+map
+```
+
+*Figure 10: Interactive Leaflet map showing spatial distribution of crimes, filterable by category.*
+
+This map allows for nuanced exploration of spatial patterns. For example, violent crime is clustered around nightlife venues and main roads, while thefts and shoplifting concentrate near commercial areas. Less frequent crimes like bicycle theft appear more diffused.
+
+### 5.3 Summary of Spatial Crime Analysis
+
+The spatial analysis revealed clear geographic patterns in crime distribution across Colchester. Density and interactive maps consistently highlighted the **town centre** and surrounding commercial areas as persistent hotspots, particularly for **violent crime**, **anti-social behaviour**, and **shoplifting**. Mapping by category showed that certain crime types, such as **vehicle crime** and **public order offences**, cluster around transport routes and retail zones, while others are more dispersed. Although clustering algorithms such as DBSCAN were considered, they were excluded due to limited added value, as visual tools already captured meaningful spatial structure. Overall, the results suggest that **location plays a key role in crime occurrence**, often aligning population density, commercial activity, and accessibility.
+
+## 6. Temporal and Spatial Interaction of Crime and Weather
+
+While the prior bivariate analysis examined pairwise relationships between individual weather variables and crime, this section explores how these interactions unfold over time and across space. By examining temporal trends and spatial concentrations in tandem with environmental conditions, we aim to identify more nuanced patterns — for example, whether warmer months see different crime compositions in certain neighbourhoods.
+
+### 6.1 Monthly Trends: Crime and Weather Side-by-Side
+
+To explore seasonal patterns in crime alongside weather conditions, we plot average monthly temperature and rainfall against total monthly crime counts. This allows for a visual comparison of their temporal alignment and potential lag effects. The solid line tracks the monthly crime totals, while the dashed line represents the average temperature for each month (rescaled for visual comparability).
+
+```{r echo=TRUE}
+library(scales)
+
+# Plotting monthly crime against temperature
+ggplot(crime_weather_monthly, aes(x = month)) +
+  geom_line(aes(y = monthly_count), color = "tomato4", size = 1) +
+  geom_line(aes(y = scales::rescale(TemperatureCAvg, to = range(monthly_count))), 
+            color = "darkorange3", linetype = "dashed") +
+  labs(
+    title = "Monthly Crime and Average Temperature Trends (2024)",
+    x = "Month",
+    y = "Crime Count",
+    caption = "Dashed line = rescaled average temperature"
+  ) +
+  theme_minimal()
+```
+
+*Figure 11: Monthly crime and temperature trends shown on a dual-axis plot, highlighting seasonal alignment.*
+
+The crime trend shows notable fluctuations, **with a pronounced peak in July**, coinciding with the highest average temperatures. This mid-year increase highlights a potential seasonal influence, aligning with the results from the bivariate analysis conducted previously. However, the subsequent drop in August, despite continued warm weather, complicates a straightforward temperature–crime link.
+
+Overall, the general alignment between the two trends, especially their shared rise from winter to summer and decline into autumn, **hints at a loose positive association between temperature and total crime**. Still, deviations in specific months (e.g., April and August) indicate that other factors beyond temperature are likely shaping monthly variation. This figure offers a useful temporal snapshot and sets the stage for more targeted statistical analyses in the sections to follow.
+
+### 6.2 Weather-Based Spatial Mapping
+
+To fully explore the interaction between weather and crime, we examine not only when these variables shift over time, but also where their effects are most pronounced across Colchester. By comparing spatial crime distributions for the top 5 crime types across different weather conditions, we assess whether certain areas are more sensitive to environmental changes.
+
+```{r}
+
+# Assigning months to seasons
+crime_season <- crime %>%
+  mutate(
+    month = month(date),
+    season = case_when(
+      month %in% c(12, 1, 2)  ~ "Winter",
+      month %in% c(3, 4, 5)   ~ "Spring",
+      month %in% c(6, 7, 8)   ~ "Summer",
+      month %in% c(9, 10, 11) ~ "Autumn"
+    )
+  )
+
+# Filtering for top crime types
+crime_season_filtered <- crime_season %>%
+  filter(category %in% top_types)
+
+# Creating the visualisation
+leaflet() %>%
+  addTiles() %>%
+
+  addCircleMarkers(
+    data = filter(crime_season_filtered, season == "Winter"),
+    ~long, ~lat,
+    color = "cadetblue", radius = 3, fillOpacity = 0.6,
+    group = "Winter",
+    popup = ~category
+  ) %>%
+
+  addCircleMarkers(
+    data = filter(crime_season_filtered, season == "Spring"),
+    ~long, ~lat,
+    color = "olivedrab", radius = 3, fillOpacity = 0.6,
+    group = "Spring",
+    popup = ~category
+  ) %>%
+
+  addCircleMarkers(
+    data = filter(crime_season_filtered, season == "Summer"),
+    ~long, ~lat,
+    color = "brown", radius = 3, fillOpacity = 0.6,
+    group = "Summer",
+    popup = ~category
+  ) %>%
+
+  addCircleMarkers(
+    data = filter(crime_season_filtered, season == "Autumn"),
+    ~long, ~lat,
+    color = "orange", radius = 3, fillOpacity = 0.6,
+    group = "Autumn",
+    popup = ~category
+  ) %>%
+
+  addLayersControl(
+    overlayGroups = c("Winter", "Spring", "Summer", "Autumn"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+```
+
+*Figure 12: Interactive leaflet map displaying seasonal crime patterns for the top 5 crime categories in Colchester. Use the layer control to switch between seasons.*
+
+This interactive leaflet map displays the spatial distribution of the top five crime types across Colchester, segmented by season. A key spatial pattern emerges: **Colchester town centre consistently appears as a high-density hotspot**, regardless of season. This concentration suggests a strong association between crime activity and areas of high foot traffic, commerce, and nightlife.
+
+Whilst the spatial elements remain similar, **seasonal differences in spread and intensity** are evident. **Summer** and **autumn** exhibit slightly broader dispersion, with more incidents radiating out from the centre. **Winter** crimes are more tightly clustered around the centre, potentially due to reduced mobility and colder weather discouraging further travel.
+
+By layering both temporal and spatial dimensions, this map effectively highlights the **persistent urban hotspots** and the **seasonal nuances** in crime distribution.
+
+### 6.3 Linear Model: Does Weather Predict Crime?
+
+To quantify the combined effect of temperature and rainfall, we fit a linear regression model using monthly crime count for the 5 most frequent crimes as the dependent variable.
+
+```{r}
+
+top5_crime_monthly <- crime %>%
+  filter(category %in% top_types) %>%
+  mutate(month = floor_date(as.Date(date), unit = "month")) %>%
+  group_by(month) %>%
+  summarise(monthly_count = n(), .groups = "drop")
+
+# Merge with weather data
+top5_crime_weather_monthly <- left_join(top5_crime_monthly, weather_monthly, by = "month")
+
+# Fit linear model with weather variables
+model_top5 <- lm(monthly_count ~ TemperatureCAvg + Precmm + HrAvg, data = top5_crime_weather_monthly)
+
+# Tidy model summary
+tidy(model_top5) %>%
+  kable(caption = "Table 2: Linear Regression Results for Top 5 Crime Types and Weather Variables")
+```
+
+To quantify the influence of weather on crime, we fit a linear regression model using monthly crime count as the dependent variable and average temperature, total precipitation, and average humidity as predictors. The $R^2$ value of 0.66 indicates that **66% of the variance in crime is explained by weather**.
+
+This model reveals that **average temperature and total monthly rainfall are both significant predictors** of monthly crime counts within the most common categories. The temperature coefficient (4.89) suggests that for each 1°C increase in monthly average temperature, there are approximately **5 more crime incidents** among the top 5 types — a finding aligned with earlier scatterplot trends.
+
+Rainfall has an even stronger effect: for every 1 mm increase in precipitation, there is approximately **1 additional incident**, which may seem counterintuitive but mirrors patterns seen in earlier rainfall-crime correlation and regression visuals. This could reflect behavioural changes (e.g., people staying in crowded indoor spaces).
+
+Humidity again remains non-significant (p = 0.56), indicating it doesn’t strongly influence variation in crime for these types.
+
+## 7. Conclusion
+
+This report set out to examine how weather conditions relate to patterns of street-level crime in Colchester during 2024, with particular attention to temperature, rainfall, and humidity. Using a combination of descriptive statistics, correlation analysis, spatial mapping, and linear modelling, the analysis explored how these environmental factors interact with crime across both time and space.
+
+Initial correlation and modelling results using overall crime counts suggested only modest links between weather and crime. An initial linear regression model including temperature, rainfall, and humidity explained roughly 48% of the variance in monthly crime counts, with only rainfall emerging as a statistically significant predictor. This finding echoed the broader trend: when all crime types were considered together, the influence of weather appeared limited.
+
+However, further analysis focusing on the top five most common crime categories revealed a clearer pattern. In this refined model, temperature and rainfall both emerged as statistically significant predictors, and the model’s adjusted R² improved to 0.66. Specifically, vehicle crime and public order offences showed moderate positive relationships with temperature, supporting the theory that warmer weather may facilitate greater mobility and public interaction—conditions under which these offences are more likely to occur. Conversely, violent crime, shoplifting, and anti-social behaviour showed little to no association with environmental factors, suggesting that weather effects are crime-type specific.
+
+Spatial and temporal patterns provided stronger and more consistent signals. Monthly crime counts peaked during the summer and dipped during winter, while spatial analyses—both static and interactive—repeatedly identified Colchester town centre as a persistent crime hotspot. Seasonal density maps and leaflet overlays highlighted modest geographic shifts across the year, with slightly broader crime dispersion during warmer months. These patterns underscore the importance of geographic context and routine activity patterns in shaping crime trends.
+
+Overall, the evidence suggests that while weather alone does not drive crime in a uniform way, it may influence certain types of crime under specific conditions. The findings advocate for a more segmented approach to crime-environment analysis, one that accounts for temporal cycles, geographic concentration, and behavioural context. Future work could build on this by incorporating multi-year data, socio-economic indicators, and more advanced spatio-temporal modelling frameworks to better capture the complexity of urban crime dynamics.
+
+In conclusion, this analysis shows that the impact of weather on crime in Colchester during 2024 is nuanced and conditional, rather than uniform or dominant. Temperature and rainfall can influence specific crime types, particularly those tied to mobility and public space, but broader trends appear to be more strongly shaped by spatial location and seasonal rhythms than by environmental variables alone.
